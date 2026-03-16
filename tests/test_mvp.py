@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from zipfile import ZIP_DEFLATED, ZipFile
 from unittest.mock import patch
 
-from docx_mvp.llm import InstructionFailure, SetText
+from docx_mvp.llm import InstructionFailure, LLM, SetText
 from docx_mvp.__main__ import build_log_path, build_paths, main
 from docx_mvp.executor import execute
 from docx_mvp.package import DocxPackage
@@ -93,6 +93,24 @@ class MvpTest(unittest.TestCase):
             ],
             failures,
         )
+
+    def test_llm_loads_api_key_from_dotenv(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+            Path(tmp, ".env").write_text(
+                "OPENAI_API_KEY=test-key\nOPENAI_MODEL=test-model\nOPENAI_BASE_URL=https://example.com/v1\n",
+                encoding="utf-8",
+            )
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path(tmp)):
+                llm = LLM()
+            self.assertEqual("test-key", llm.api_key)
+            self.assertEqual("test-model", llm.model)
+            self.assertEqual("https://example.com/v1", llm.base_url)
+
+    def test_llm_raises_clear_error_when_api_key_missing(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path(tmp)):
+                with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY is not set"):
+                    LLM()
 
     def test_retry_loop_stops_after_clean_round(self) -> None:
         class FakeLLM:

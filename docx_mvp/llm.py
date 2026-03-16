@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -35,6 +36,23 @@ class InstructionFailure:
     error: str
 
 
+def load_dotenv() -> Path | None:
+    for directory in [Path.cwd(), *Path.cwd().parents]:
+        env_path = directory / ".env"
+        if not env_path.exists():
+            continue
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("\"'")
+            os.environ.setdefault(key, value)
+        return env_path
+    return None
+
+
 class LLM:
     def __init__(
         self,
@@ -42,7 +60,10 @@ class LLM:
         model: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        self.api_key = api_key or os.environ["OPENAI_API_KEY"]
+        load_dotenv()
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set. Add it to .env or export it before running docx-edit-mvp.")
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5.2")
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         self.last_raw_output = ""
