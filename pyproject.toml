@@ -7,6 +7,9 @@ dependencies = ["lxml>=5"]
 [project.scripts]
 docx-edit-mvp = "docx_mvp.__main__:main"
 
+[tool.setuptools]
+packages = ["docx_mvp"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
