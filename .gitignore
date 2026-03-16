@@ -1,9 +1,14 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 .vscode/
+.DS_Store
+*.log
+*.pdf
+*.docx.log
 input/
 output/
-input/

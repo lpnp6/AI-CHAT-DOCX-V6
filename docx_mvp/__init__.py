@@ -1,6 +1,6 @@
-from .agent import Agent, InstructionFailure, SetText
+from .llm import InstructionFailure, LLM, SetText
 from .executor import execute
 from .package import DocxPackage
 from .workflow import edit_docx
 
-__all__ = ["Agent", "DocxPackage", "InstructionFailure", "SetText", "edit_docx", "execute"]
+__all__ = ["DocxPackage", "InstructionFailure", "LLM", "SetText", "edit_docx", "execute"]

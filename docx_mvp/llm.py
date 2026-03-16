@@ -16,6 +16,8 @@ Rules:
 - Use the `w:` namespace prefix exactly as it appears in document.xml.
 - Prefer pointing xpath to an existing <w:t> node.
 - If a target cell or paragraph is empty and has no <w:t>, you may point to its existing <w:p> or <w:tc> node instead.
+- If `locked_xpaths` is provided, never reuse or overwrite those XPath targets.
+- When `failed_instructions` is provided, only repair those failed targets instead of moving content onto unrelated fields.
 - Never wrap JSON in markdown.
 """
 
@@ -33,7 +35,7 @@ class InstructionFailure:
     error: str
 
 
-class Agent:
+class LLM:
     def __init__(
         self,
         api_key: str | None = None,
@@ -50,6 +52,7 @@ class Agent:
         document_xml: str,
         prompt: str,
         failures: list[InstructionFailure] | None = None,
+        locked_xpaths: list[str] | None = None,
     ) -> list[SetText]:
         payload = {
             "model": self.model,
@@ -63,6 +66,7 @@ class Agent:
                             "prompt": prompt,
                             "document_xml": document_xml,
                             "failed_instructions": [asdict(item) for item in failures or []],
+                            "locked_xpaths": locked_xpaths or [],
                         },
                         ensure_ascii=False,
                     ),

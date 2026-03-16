@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from lxml import etree
 
-from .agent import InstructionFailure, SetText
+from .llm import InstructionFailure, SetText
 
 
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -100,12 +100,25 @@ def try_repair_xpath(root: etree._Element, xpath: str, text: str) -> bool:
     return False
 
 
-def execute(document_xml: str, instructions: list[SetText]) -> tuple[str, list[InstructionFailure]]:
+def execute(
+    document_xml: str,
+    instructions: list[SetText],
+    locked_xpaths: set[str] | None = None,
+) -> tuple[str, list[InstructionFailure]]:
     root = etree.fromstring(document_xml.encode("utf-8"))
     failures: list[InstructionFailure] = []
+    locked_xpaths = locked_xpaths or set()
     for instruction in instructions:
         if instruction.type != "set_text":
             failures.append(InstructionFailure(asdict(instruction), f"unsupported type: {instruction.type}"))
+            continue
+        if instruction.xpath in locked_xpaths:
+            failures.append(
+                InstructionFailure(
+                    asdict(instruction),
+                    f'xpath is locked and cannot be overwritten: "{instruction.xpath}"',
+                )
+            )
             continue
         try:
             matches = root.xpath(instruction.xpath, namespaces=NS)

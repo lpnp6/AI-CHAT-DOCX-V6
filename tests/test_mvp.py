@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from zipfile import ZIP_DEFLATED, ZipFile
 from unittest.mock import patch
 
-from docx_mvp.agent import InstructionFailure, SetText
+from docx_mvp.llm import InstructionFailure, SetText
 from docx_mvp.__main__ import build_log_path, build_paths, main
 from docx_mvp.executor import execute
 from docx_mvp.package import DocxPackage
@@ -78,12 +78,34 @@ class MvpTest(unittest.TestCase):
             failures,
         )
 
+    def test_failure_is_returned_for_locked_xpath(self) -> None:
+        _, failures = execute(
+            XML,
+            [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="World")],
+            locked_xpaths={"./w:body/w:p[1]/w:r[1]/w:t[1]"},
+        )
+        self.assertEqual(
+            [
+                InstructionFailure(
+                    {"type": "set_text", "xpath": "./w:body/w:p[1]/w:r[1]/w:t[1]", "text": "World"},
+                    'xpath is locked and cannot be overwritten: "./w:body/w:p[1]/w:r[1]/w:t[1]"',
+                )
+            ],
+            failures,
+        )
+
     def test_retry_loop_stops_after_clean_round(self) -> None:
-        class FakeAgent:
+        class FakeLLM:
             def __init__(self) -> None:
                 self.calls = 0
 
-            def generate(self, document_xml: str, prompt: str, failures: list[InstructionFailure]) -> list[SetText]:
+            def generate(
+                self,
+                document_xml: str,
+                prompt: str,
+                failures: list[InstructionFailure],
+                locked_xpaths: list[str] | None = None,
+            ) -> list[SetText]:
                 self.calls += 1
                 if self.calls == 1:
                     return [SetText(type="set_text", xpath="./w:body/w:p[9]/w:r[1]/w:t[1]", text="World")]
@@ -95,18 +117,24 @@ class MvpTest(unittest.TestCase):
             with ZipFile(source, "w", compression=ZIP_DEFLATED) as zf:
                 zf.writestr("[Content_Types].xml", "<Types/>")
                 zf.writestr("word/document.xml", XML)
-            agent = FakeAgent()
-            failures = edit_docx(source, target, "replace hello", agent=agent)
-            self.assertEqual(2, agent.calls)
+            llm = FakeLLM()
+            failures = edit_docx(source, target, "replace hello", llm=llm)
+            self.assertEqual(2, llm.calls)
             self.assertEqual([], failures)
             self.assertIn("World", DocxPackage.load(target).document_xml)
 
     def test_retry_loop_still_writes_output_when_failures_remain(self) -> None:
-        class FakeAgent:
+        class FakeLLM:
             def __init__(self) -> None:
                 self.done = False
 
-            def generate(self, document_xml: str, prompt: str, failures: list[InstructionFailure]) -> list[SetText]:
+            def generate(
+                self,
+                document_xml: str,
+                prompt: str,
+                failures: list[InstructionFailure],
+                locked_xpaths: list[str] | None = None,
+            ) -> list[SetText]:
                 if not self.done:
                     self.done = True
                     return [
@@ -121,9 +149,47 @@ class MvpTest(unittest.TestCase):
             with ZipFile(source, "w", compression=ZIP_DEFLATED) as zf:
                 zf.writestr("[Content_Types].xml", "<Types/>")
                 zf.writestr("word/document.xml", XML)
-            failures = edit_docx(source, target, "replace hello", max_rounds=2, agent=FakeAgent())
+            failures = edit_docx(source, target, "replace hello", max_rounds=2, llm=FakeLLM())
             self.assertEqual(1, len(failures))
             self.assertIn("World", DocxPackage.load(target).document_xml)
+
+    def test_retry_loop_does_not_overwrite_locked_xpath(self) -> None:
+        case = self
+
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(
+                self,
+                document_xml: str,
+                prompt: str,
+                failures: list[InstructionFailure],
+                locked_xpaths: list[str] | None = None,
+            ) -> list[SetText]:
+                self.calls += 1
+                if self.calls == 1:
+                    return [
+                        SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="Gold"),
+                        SetText(type="set_text", xpath="./w:body/w:p[9]/w:r[1]/w:t[1]", text="Missing"),
+                    ]
+                case.assertEqual(["./w:body/w:p[1]/w:r[1]/w:t[1]"], locked_xpaths)
+                return [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="Overwrite")]
+
+        with TemporaryDirectory() as tmp:
+            source = f"{tmp}/in.docx"
+            target = f"{tmp}/out.docx"
+            with ZipFile(source, "w", compression=ZIP_DEFLATED) as zf:
+                zf.writestr("[Content_Types].xml", "<Types/>")
+                zf.writestr("word/document.xml", XML)
+            failures = edit_docx(source, target, "replace hello", max_rounds=2, llm=FakeLLM())
+            self.assertEqual(1, len(failures))
+            self.assertEqual(
+                'xpath is locked and cannot be overwritten: "./w:body/w:p[1]/w:r[1]/w:t[1]"',
+                failures[0].error,
+            )
+            self.assertIn("Gold", DocxPackage.load(target).document_xml)
+            self.assertNotIn("Overwrite", DocxPackage.load(target).document_xml)
 
     def test_cli_prompts_and_writes_default_output_name(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -136,14 +202,20 @@ class MvpTest(unittest.TestCase):
                     zf.writestr("[Content_Types].xml", "<Types/>")
                     zf.writestr("word/document.xml", XML)
 
-                class FakeAgent:
+                class FakeLLM:
                     def __init__(self) -> None:
                         self.last_raw_output = '{"instructions":[{"type":"set_text","xpath":"./w:body/w:p[1]/w:r[1]/w:t[1]","text":"CLI"}]}'
 
-                    def generate(self, document_xml: str, prompt: str, failures: list[InstructionFailure]) -> list[SetText]:
+                    def generate(
+                        self,
+                        document_xml: str,
+                        prompt: str,
+                        failures: list[InstructionFailure],
+                        locked_xpaths: list[str] | None = None,
+                    ) -> list[SetText]:
                         return [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="CLI")]
 
-                with patch("docx_mvp.workflow.Agent", return_value=FakeAgent()), patch(
+                with patch("docx_mvp.workflow.LLM", return_value=FakeLLM()), patch(
                     "builtins.input", side_effect=["demo.docx", "replace hello"]
                 ), patch("sys.argv", ["docx-edit-mvp"]):
                     main()
@@ -163,14 +235,20 @@ class MvpTest(unittest.TestCase):
                     zf.writestr("[Content_Types].xml", "<Types/>")
                     zf.writestr("word/document.xml", XML)
 
-                class FakeAgent:
+                class FakeLLM:
                     def __init__(self) -> None:
                         self.last_raw_output = '{"instructions":[{"type":"set_text","xpath":"./w:body/w:p[9]/w:r[1]/w:t[1]","text":"CLI"}]}'
 
-                    def generate(self, document_xml: str, prompt: str, failures: list[InstructionFailure]) -> list[SetText]:
+                    def generate(
+                        self,
+                        document_xml: str,
+                        prompt: str,
+                        failures: list[InstructionFailure],
+                        locked_xpaths: list[str] | None = None,
+                    ) -> list[SetText]:
                         return [SetText(type="set_text", xpath="./w:body/w:p[9]/w:r[1]/w:t[1]", text="CLI")]
 
-                with patch("docx_mvp.workflow.Agent", return_value=FakeAgent()), patch(
+                with patch("docx_mvp.workflow.LLM", return_value=FakeLLM()), patch(
                     "builtins.input", side_effect=["demo.docx", "replace hello"]
                 ), patch("sys.argv", ["docx-edit-mvp"]):
                     main()
@@ -179,11 +257,17 @@ class MvpTest(unittest.TestCase):
                 self.assertIn("remaining failures:", (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8"))
 
     def test_workflow_logs_to_callback(self) -> None:
-        class FakeAgent:
+        class FakeLLM:
             def __init__(self) -> None:
                 self.last_raw_output = '{"instructions":[{"type":"set_text","xpath":"./w:body/w:p[1]/w:r[1]/w:t[1]","text":"World"}]}'
 
-            def generate(self, document_xml: str, prompt: str, failures: list[InstructionFailure]) -> list[SetText]:
+            def generate(
+                self,
+                document_xml: str,
+                prompt: str,
+                failures: list[InstructionFailure],
+                locked_xpaths: list[str] | None = None,
+            ) -> list[SetText]:
                 return [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="World")]
 
         with TemporaryDirectory() as tmp:
@@ -193,7 +277,7 @@ class MvpTest(unittest.TestCase):
                 zf.writestr("[Content_Types].xml", "<Types/>")
                 zf.writestr("word/document.xml", XML)
             messages: list[str] = []
-            edit_docx(source, target, "replace hello", agent=FakeAgent(), log=messages.append)
+            edit_docx(source, target, "replace hello", llm=FakeLLM(), log=messages.append)
             self.assertTrue(any(message.startswith("round 1: generating instructions") for message in messages))
 
 
