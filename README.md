@@ -98,16 +98,7 @@ docx-edit-mvp demo.docx "把公司名称替换成小米科技有限责任公司"
 docx-edit-mvp demo.docx "填写雷军简历" -o result.docx --max-rounds 5
 ```
 
-如果不传参数，程序会进入交互模式：
-
-```bash
-docx-edit-mvp
-```
-
-会依次提示：
-
-- `input filename`
-- `prompt`
+命令行参数现在都是必填，不再支持交互式输入。
 
 ## 日志内容
 

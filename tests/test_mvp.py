@@ -10,7 +10,7 @@ from docx_mvp.llm import InstructionFailure, LLM, SetText
 from docx_mvp.__main__ import build_log_path, build_paths, main
 from docx_mvp.executor import execute
 from docx_mvp.package import DocxPackage
-from docx_mvp.workflow import edit_docx
+from docx_mvp.workflow import edit_docx, extract_fields
 
 
 XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -18,6 +18,20 @@ XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <w:body>
     <w:p><w:r><w:t>Hello</w:t></w:r></w:p>
     <w:p><w:r><w:t>Hello</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+
+FIELD_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>姓名</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>张三</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>电话：</w:t></w:r></w:p>
+    <w:p><w:r><w:t>123456</w:t></w:r></w:p>
   </w:body>
 </w:document>"""
 
@@ -112,6 +126,28 @@ class MvpTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY is not set"):
                     LLM()
 
+    def test_extract_fields_returns_table_and_following_paragraph_candidates(self) -> None:
+        fields = extract_fields(FIELD_XML)
+        self.assertEqual(
+            [
+                {
+                    "label": "姓名",
+                    "xpath": "./w:body/w:tbl/w:tr/w:tc[2]/w:p/w:r/w:t",
+                    "context": "姓名 | 张三",
+                    "current_text": "张三",
+                    "confidence": 0.8,
+                },
+                {
+                    "label": "电话",
+                    "xpath": "./w:body/w:p[2]/w:r/w:t",
+                    "context": "电话： | 123456",
+                    "current_text": "123456",
+                    "confidence": 0.95,
+                },
+            ],
+            [field.__dict__ for field in fields],
+        )
+
     def test_retry_loop_stops_after_clean_round(self) -> None:
         class FakeLLM:
             def __init__(self) -> None:
@@ -122,6 +158,7 @@ class MvpTest(unittest.TestCase):
                 document_xml: str,
                 prompt: str,
                 failures: list[InstructionFailure],
+                field_candidates: list[dict] | None = None,
                 locked_xpaths: list[str] | None = None,
             ) -> list[SetText]:
                 self.calls += 1
@@ -151,6 +188,7 @@ class MvpTest(unittest.TestCase):
                 document_xml: str,
                 prompt: str,
                 failures: list[InstructionFailure],
+                field_candidates: list[dict] | None = None,
                 locked_xpaths: list[str] | None = None,
             ) -> list[SetText]:
                 if not self.done:
@@ -183,6 +221,7 @@ class MvpTest(unittest.TestCase):
                 document_xml: str,
                 prompt: str,
                 failures: list[InstructionFailure],
+                field_candidates: list[dict] | None = None,
                 locked_xpaths: list[str] | None = None,
             ) -> list[SetText]:
                 self.calls += 1
@@ -209,7 +248,7 @@ class MvpTest(unittest.TestCase):
             self.assertIn("Gold", DocxPackage.load(target).document_xml)
             self.assertNotIn("Overwrite", DocxPackage.load(target).document_xml)
 
-    def test_cli_prompts_and_writes_default_output_name(self) -> None:
+    def test_cli_writes_default_output_name(self) -> None:
         with TemporaryDirectory() as tmp:
             input_dir = Path(tmp) / "input"
             output_dir = Path(tmp) / "output"
@@ -229,13 +268,14 @@ class MvpTest(unittest.TestCase):
                         document_xml: str,
                         prompt: str,
                         failures: list[InstructionFailure],
+                        field_candidates: list[dict] | None = None,
                         locked_xpaths: list[str] | None = None,
                     ) -> list[SetText]:
                         return [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="CLI")]
 
                 with patch("docx_mvp.workflow.LLM", return_value=FakeLLM()), patch(
-                    "builtins.input", side_effect=["demo.docx", "replace hello"]
-                ), patch("sys.argv", ["docx-edit-mvp"]):
+                    "sys.argv", ["docx-edit-mvp", "demo.docx", "replace hello"]
+                ):
                     main()
 
                 self.assertIn("CLI", DocxPackage.load(str(output_dir / "demo.docx" / "demo.docx")).document_xml)
@@ -262,13 +302,14 @@ class MvpTest(unittest.TestCase):
                         document_xml: str,
                         prompt: str,
                         failures: list[InstructionFailure],
+                        field_candidates: list[dict] | None = None,
                         locked_xpaths: list[str] | None = None,
                     ) -> list[SetText]:
                         return [SetText(type="set_text", xpath="./w:body/w:p[9]/w:r[1]/w:t[1]", text="CLI")]
 
                 with patch("docx_mvp.workflow.LLM", return_value=FakeLLM()), patch(
-                    "builtins.input", side_effect=["demo.docx", "replace hello"]
-                ), patch("sys.argv", ["docx-edit-mvp"]):
+                    "sys.argv", ["docx-edit-mvp", "demo.docx", "replace hello"]
+                ):
                     main()
 
                 self.assertTrue((output_dir / "demo.docx" / "demo.docx").exists())
@@ -284,6 +325,7 @@ class MvpTest(unittest.TestCase):
                 document_xml: str,
                 prompt: str,
                 failures: list[InstructionFailure],
+                field_candidates: list[dict] | None = None,
                 locked_xpaths: list[str] | None = None,
             ) -> list[SetText]:
                 return [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="World")]
