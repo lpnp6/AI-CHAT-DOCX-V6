@@ -41,20 +41,21 @@ class InstructionFailure:
 
 
 def load_dotenv() -> Path | None:
-    for directory in [Path.cwd(), *Path.cwd().parents]:
-        env_path = directory / ".env"
-        if not env_path.exists():
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        return None
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            key, value = stripped.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip("\"'")
-            os.environ.setdefault(key, value)
-        return env_path
-    return None
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        os.environ.setdefault(key, value)
+    return env_path
 
 
 class LLM:
@@ -71,7 +72,7 @@ class LLM:
             raise RuntimeError("OPENAI_API_KEY is not set. Add it to .env or export it before running docx-edit-mvp.")
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5.2")
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
-        self.timeout = timeout or float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "30"))
+        self.timeout = timeout or float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "300"))
         self.last_raw_output = ""
 
     def generate(

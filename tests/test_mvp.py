@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from unittest.mock import patch
 
 from docx_mvp.llm import InstructionFailure, LLM, SetText
-from docx_mvp.__main__ import build_log_path, build_paths, main
+from docx_mvp.__main__ import build_log_path, build_paths, format_console_message, main, make_logger
 from docx_mvp.executor import execute
 from docx_mvp.package import DocxPackage
 from docx_mvp.workflow import edit_docx, extract_fields
@@ -37,11 +37,40 @@ FIELD_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 
 class MvpTest(unittest.TestCase):
+    def assert_timestamped_lines(self, text: str) -> None:
+        for line in text.strip().splitlines():
+            self.assertRegex(line, r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ")
+
+    def test_format_console_message_flattens_and_truncates(self) -> None:
+        message = "line 1\n" + ("x" * 300)
+        formatted = format_console_message(message, max_chars=40)
+        self.assertNotIn("\n", formatted)
+        self.assertTrue(formatted.endswith("..."))
+        self.assertLessEqual(len(formatted), 40)
+
+    def test_make_logger_keeps_full_message_in_log_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "demo.log"
+            logger = make_logger(log_path)
+            message = "line 1\n" + ("x" * 300)
+            with patch("builtins.print") as mock_print:
+                logger(message)
+            mock_print.assert_called_once()
+            self.assertNotIn("\n", mock_print.call_args.args[0])
+            log_text = log_path.read_text(encoding="utf-8")
+            self.assertRegex(log_text.splitlines()[0], r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ")
+            self.assertIn(message, log_text)
+
     def test_cli_paths_use_input_output_dirs(self) -> None:
         input_path, output_path = build_paths("demo.docx", None)
         self.assertTrue(str(input_path).endswith("/input/demo.docx"))
         self.assertTrue(str(output_path).endswith("/output/demo.docx/demo.docx"))
         self.assertTrue(str(build_log_path(output_path)).endswith("/output/demo.docx/demo.docx.log"))
+
+    def test_cli_paths_accept_absolute_input_path(self) -> None:
+        input_path, output_path = build_paths("/tmp/demo.docx", None)
+        self.assertEqual(Path("/tmp/demo.docx"), input_path)
+        self.assertTrue(str(output_path).endswith("/output/demo.docx/demo.docx"))
 
     def test_package_and_execute(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -110,19 +139,70 @@ class MvpTest(unittest.TestCase):
 
     def test_llm_loads_api_key_from_dotenv(self) -> None:
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
-            Path(tmp, ".env").write_text(
+            project_dir = Path(tmp) / "project"
+            module_dir = project_dir / "docx_mvp"
+            module_dir.mkdir(parents=True)
+            (project_dir / ".env").write_text(
                 "OPENAI_API_KEY=test-key\nOPENAI_MODEL=test-model\nOPENAI_BASE_URL=https://example.com/v1\n",
                 encoding="utf-8",
             )
-            with patch("docx_mvp.llm.Path.cwd", return_value=Path(tmp)):
+            fake_module_file = module_dir / "llm.py"
+            fake_module_file.write_text("", encoding="utf-8")
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path("/tmp")), patch("docx_mvp.llm.__file__", str(fake_module_file)):
                 llm = LLM()
             self.assertEqual("test-key", llm.api_key)
             self.assertEqual("test-model", llm.model)
             self.assertEqual("https://example.com/v1", llm.base_url)
 
+    def test_llm_loads_dotenv_with_export_prefix(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+            project_dir = Path(tmp) / "project"
+            module_dir = project_dir / "docx_mvp"
+            module_dir.mkdir(parents=True)
+            (project_dir / ".env").write_text(
+                'export OPENAI_API_KEY="test-key"\nexport OPENAI_MODEL=test-model\n',
+                encoding="utf-8",
+            )
+            fake_module_file = module_dir / "llm.py"
+            fake_module_file.write_text("", encoding="utf-8")
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path("/tmp")), patch("docx_mvp.llm.__file__", str(fake_module_file)):
+                llm = LLM()
+            self.assertEqual("test-key", llm.api_key)
+            self.assertEqual("test-model", llm.model)
+
+    def test_llm_loads_dotenv_from_module_parent_when_cwd_does_not_contain_project_env(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+            project_dir = Path(tmp) / "project"
+            module_dir = project_dir / "docx_mvp"
+            module_dir.mkdir(parents=True)
+            (project_dir / ".env").write_text("OPENAI_API_KEY=test-key\n", encoding="utf-8")
+            fake_module_file = module_dir / "llm.py"
+            fake_module_file.write_text("", encoding="utf-8")
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path("/tmp")), patch("docx_mvp.llm.__file__", str(fake_module_file)):
+                llm = LLM()
+            self.assertEqual("test-key", llm.api_key)
+
+    def test_llm_prefers_shell_environment_over_project_dotenv(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAI_API_KEY": "shell-key"}, clear=True):
+            project_dir = Path(tmp) / "project"
+            module_dir = project_dir / "docx_mvp"
+            module_dir.mkdir(parents=True)
+            (project_dir / ".env").write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_MODEL=dotenv-model\n", encoding="utf-8")
+            fake_module_file = module_dir / "llm.py"
+            fake_module_file.write_text("", encoding="utf-8")
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path("/tmp")), patch("docx_mvp.llm.__file__", str(fake_module_file)):
+                llm = LLM()
+            self.assertEqual("shell-key", llm.api_key)
+            self.assertEqual("dotenv-model", llm.model)
+
     def test_llm_raises_clear_error_when_api_key_missing(self) -> None:
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
-            with patch("docx_mvp.llm.Path.cwd", return_value=Path(tmp)):
+            project_dir = Path(tmp) / "project"
+            module_dir = project_dir / "docx_mvp"
+            module_dir.mkdir(parents=True)
+            fake_module_file = module_dir / "llm.py"
+            fake_module_file.write_text("", encoding="utf-8")
+            with patch("docx_mvp.llm.Path.cwd", return_value=Path(tmp)), patch("docx_mvp.llm.__file__", str(fake_module_file)):
                 with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY is not set"):
                     LLM()
 
@@ -278,9 +358,48 @@ class MvpTest(unittest.TestCase):
                 ):
                     main()
 
+                log_text = (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8")
                 self.assertIn("CLI", DocxPackage.load(str(output_dir / "demo.docx" / "demo.docx")).document_xml)
-                self.assertIn("written:", (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8"))
-                self.assertIn("model_output=", (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8"))
+                self.assert_timestamped_lines(log_text)
+                self.assertIn("written:", log_text)
+                self.assertIn("model_output=", log_text)
+                self.assertIn(str((output_dir / "demo.docx" / "demo.docx").resolve()), log_text)
+                self.assertTrue(
+                    log_text.strip().splitlines()[-1].endswith(str((output_dir / "demo.docx" / "demo.docx").resolve()))
+                )
+                self.assertRegex(log_text.strip().splitlines()[-1], r"\] output: ")
+
+    def test_cli_accepts_absolute_input_path_and_logs_absolute_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "output"
+            source = Path(tmp) / "demo.docx"
+            with ZipFile(source, "w", compression=ZIP_DEFLATED) as zf:
+                zf.writestr("[Content_Types].xml", "<Types/>")
+                zf.writestr("word/document.xml", XML)
+
+            class FakeLLM:
+                def __init__(self) -> None:
+                    self.last_raw_output = '{"instructions":[{"type":"set_text","xpath":"./w:body/w:p[1]/w:r[1]/w:t[1]","text":"CLI"}]}'
+
+                def generate(
+                    self,
+                    document_xml: str,
+                    prompt: str,
+                    failures: list[InstructionFailure],
+                    field_candidates: list[dict] | None = None,
+                    locked_xpaths: list[str] | None = None,
+                ) -> list[SetText]:
+                    return [SetText(type="set_text", xpath="./w:body/w:p[1]/w:r[1]/w:t[1]", text="CLI")]
+
+            with patch("docx_mvp.__main__.OUTPUT_DIR", output_dir), patch("docx_mvp.workflow.LLM", return_value=FakeLLM()), patch(
+                "sys.argv", ["docx-edit-mvp", str(source), "replace hello"]
+            ):
+                main()
+
+            log_text = (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8")
+            self.assert_timestamped_lines(log_text)
+            self.assertIn(str(source.resolve()), log_text)
+            self.assertIn(str((output_dir / "demo.docx" / "demo.docx").resolve()), log_text)
 
     def test_cli_does_not_raise_when_failures_remain(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -313,7 +432,9 @@ class MvpTest(unittest.TestCase):
                     main()
 
                 self.assertTrue((output_dir / "demo.docx" / "demo.docx").exists())
-                self.assertIn("remaining failures:", (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8"))
+                log_text = (output_dir / "demo.docx" / "demo.docx.log").read_text(encoding="utf-8")
+                self.assert_timestamped_lines(log_text)
+                self.assertIn("remaining failures:", log_text)
 
     def test_workflow_logs_to_callback(self) -> None:
         class FakeLLM:

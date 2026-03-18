@@ -68,7 +68,16 @@
 
 默认模型是 `gpt-5.2`，默认接口地址是 `https://api.openai.com/v1`。
 
+环境变量来源只有两种：
+
+- 当前 shell / bash 已导出的环境变量
+- 项目根目录下的 `.env`
+
+如果两边都存在同名变量，shell 环境变量优先。
+
 ## 安装
+
+使用 `pip`：
 
 ```bash
 python -m venv .venv
@@ -76,12 +85,71 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+使用 `uv`：
+
+```bash
+uv sync
+```
+
+如果本机还没有 `uv`，先安装它，例如：
+
+```bash
+brew install uv
+```
+
+如果你更习惯显式创建虚拟环境，也可以：
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -e .
+```
+
+`uv` 运行命令时推荐直接使用项目环境：
+
+```bash
+uv run docx-edit-mvp demo.docx "把公司名称替换成小米科技有限责任公司"
+```
+
+## 安装原理
+
+这个项目之所以同时支持 `pip` 和 `uv`，核心原因是仓库里已经有标准的 [`pyproject.toml`](/Users/dip/Developer/study/AI-CHAT-DOCX-V6/pyproject.toml) 打包元数据：
+
+- `[project]` 定义了项目名、Python 版本要求和运行依赖
+- `[build-system]` 告诉安装器使用 `setuptools.build_meta` 来构建和安装项目
+- `[project.scripts]` 声明了命令行入口 `docx-edit-mvp = "docx_mvp.__main__:main"`
+
+`pip install -e .` 的原理是：
+
+- 读取 `pyproject.toml`
+- 按 `build-system` 调用 `setuptools`
+- 以 editable 模式把当前源码目录安装到虚拟环境
+- 把 `docx-edit-mvp` 这个命令行入口注册到虚拟环境里
+
+`uv sync` 的原理是：
+
+- 把当前目录识别为一个 Python project
+- 读取 `pyproject.toml` 里的依赖和构建配置
+- 创建或更新项目本地的 `.venv`
+- 默认以 editable 模式安装当前项目，并安装依赖
+- 之后通过 `uv run` 在这个项目环境里执行 `docx-edit-mvp`
+
+`uv pip install -e .` 则更接近 `pip install -e .`，只是把底层安装器换成了 `uv` 的 pip 兼容接口。`uv` 的项目工作流更推荐 `uv sync` + `uv run`。
+
 ## 环境变量示例
 
 ```bash
 export OPENAI_API_KEY=your_api_key
 export OPENAI_MODEL=gpt-5.2
 export OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+也可以在项目根目录创建 `.env`：
+
+```bash
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=gpt-5.2
+OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 ## 用法
@@ -92,6 +160,12 @@ export OPENAI_BASE_URL=https://api.openai.com/v1
 docx-edit-mvp demo.docx "把公司名称替换成小米科技有限责任公司"
 ```
 
+也可以直接传源文件的绝对路径：
+
+```bash
+docx-edit-mvp /absolute/path/to/demo.docx "把公司名称替换成小米科技有限责任公司"
+```
+
 指定输出名和最大轮数：
 
 ```bash
@@ -99,6 +173,12 @@ docx-edit-mvp demo.docx "填写雷军简历" -o result.docx --max-rounds 5
 ```
 
 命令行参数现在都是必填，不再支持交互式输入。
+
+程序运行时会在日志中输出：
+
+- 输入文档绝对路径
+- 输出文档绝对路径
+- 最终写出的打包文档绝对路径
 
 ## 日志内容
 
